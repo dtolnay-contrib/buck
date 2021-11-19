@@ -31,10 +31,12 @@ import com.facebook.buck.core.rules.BuildRuleParams;
 import com.facebook.buck.core.rules.DescriptionWithTargetGraph;
 import com.facebook.buck.core.rules.common.BuildableSupport;
 import com.facebook.buck.core.rules.tool.BinaryWrapperRule;
+import com.facebook.buck.core.sourcepath.SourcePath;
 import com.facebook.buck.core.toolchain.ToolchainProvider;
 import com.facebook.buck.core.toolchain.tool.Tool;
 import com.facebook.buck.core.util.immutables.RuleArg;
 import com.facebook.buck.cxx.CxxDeps;
+import com.facebook.buck.cxx.toolchain.linker.Linker.LinkableDepType;
 import com.facebook.buck.downwardapi.config.DownwardApiConfig;
 import com.facebook.buck.features.rust.RustBinaryDescription.Type;
 import com.facebook.buck.io.filesystem.ProjectFilesystem;
@@ -48,6 +50,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 public class RustTestDescription
     implements DescriptionWithTargetGraph<RustTestDescriptionArg>,
@@ -81,6 +84,7 @@ public class RustTestDescription
       RustTestDescriptionArg args) {
     ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
     BuildTarget exeTarget = buildTarget.withAppendedFlavors(InternalFlavor.of("unittest"));
+    BuildTarget docsTarget = buildTarget.withAppendedFlavors(InternalFlavor.of("doctest"));
     CxxDeps allDeps =
         CxxDeps.builder()
             .addDeps(args.getDeps())
@@ -142,10 +146,56 @@ public class RustTestDescription
                         allDeps.get(graphBuilder, rustPlatform.getCxxPlatform()),
                         args.getNamedDeps()));
 
+    String crateOrDefaultName = args.getCrate().orElse(RustCompileUtils.ruleToCrateName(buildTarget.getShortName()));
+    Pair<String, ImmutableSortedMap<SourcePath, Optional<String>>> rootModuleAndSources =
+        RustCompileUtils.getRootModuleAndSources(
+            projectFilesystem,
+            docsTarget,
+            graphBuilder,
+            rustPlatform.getCxxPlatform(),
+            crateOrDefaultName,
+            args.getCrateRoot(),
+            ImmutableSet.of("lib.rs", "main.rs"),
+            args.getSrcs(),
+            args.getMappedSrcs());
+    BuildRule doctestBuild =
+        graphBuilder.computeIfAbsent(
+            docsTarget,
+            target ->
+                    RustCompileUtils.createBuild(
+                        target,
+                        crateOrDefaultName,
+                        projectFilesystem,
+                        graphBuilder,
+                        rustPlatform,
+                        rustBuckConfig,
+                        downwardApiConfig,
+                        /* environment */ flagsAndEnv.getSecond(),
+                        /* rustcFlags */ flagsAndEnv.getFirst(),
+                        /* linkerFlags */ ImmutableList.of(),
+                        /* linkerInputs */ ImmutableList.of(),
+                        CrateType.DOC,
+                        args.getEdition(),
+                        LinkableDepType.STATIC,
+                        /* rpath */ true,
+                        /* mappedSources */ rootModuleAndSources.getSecond(),
+                        /* rootModule */ rootModuleAndSources.getFirst(),
+                        /* forceRlib */ false,
+                        /* preferStatic */ false,
+                        allDeps.get(graphBuilder, rustPlatform.getCxxPlatform()),
+                        args.getNamedDeps(),
+                        /* incremental */ Optional.empty()));
+                        //args.getMappedSrcs()
+                        //args.isRpath(),
+                        //ImmutableSet.of("lib.rs", "main.rs"),
+                        //type.getCrateType(),
+
     Tool testExe = testExeBuild.getExecutableCommand(OutputLabel.defaultLabel());
 
+    Stream<BuildRule> exeDeps = BuildableSupport.getDeps(testExe, graphBuilder);
+    Stream<BuildRule> docsDeps = Stream.of(doctestBuild);
     BuildRuleParams testParams =
-        params.copyAppendingExtraDeps(BuildableSupport.getDepsCollection(testExe, graphBuilder));
+        params.copyAppendingExtraDeps(() -> Stream.concat(exeDeps, docsDeps).iterator());
 
     return new RustTest(
         buildTarget,

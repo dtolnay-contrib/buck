@@ -229,7 +229,7 @@ public class RustCompileUtils {
    *   <li>`--crate-type lib/rlib/dylib/cdylib/staticlib` according to flavor
    * </ul>
    */
-  private static RustCompileRule createBuild(
+  public static RustCompileRule createBuild(
       BuildTarget target,
       String crateName,
       ProjectFilesystem projectFilesystem,
